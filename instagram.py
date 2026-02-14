@@ -1,104 +1,141 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
 import numpy as np
+import matplotlib.pyplot as plt
+import re
+from scipy import stats
 
-# --- 1. SET UP PAGE CONFIG ---
-st.set_page_config(page_title="Instagram Business Analytics", layout="wide")
-st.title("📊 Instagram Performance Dashboard")
-st.markdown("Analysis of Content Efficiency and Audience Engagement")
+# Page Config
+st.set_page_config(page_title="Marketing ROI Analytics", layout="wide")
+st.title("📊 Marketing Campaign ROI & Conversion Analytics")
 
-# --- 2. GENERATE SYNTHETIC DATA (Business Context) ---
+# =========================
+# 1. DATA GENERATION (Numpy/Pandas)
+# =========================
 @st.cache_data
-def load_data():
+def generate_dataset(n=1000):
     np.random.seed(42)
-    dates = pd.date_range(start="2024-01-01", periods=30)
-    post_types = ['Reel', 'Carousel', 'Image']
+    channels = ['Facebook', 'Google', 'Instagram', 'Email', 'YouTube']
+    regions = ['North', 'South', 'East', 'West']
+
+    data = pd.DataFrame({
+        'campaign_id': range(1, n+1),
+        'channel': np.random.choice(channels, n),
+        'region': np.random.choice(regions, n),
+        'spend': np.random.uniform(1000, 10000, n),
+        'clicks': np.random.randint(100, 5000, n),
+        'leads': np.random.randint(50, 1000, n),
+        'promo_code': np.random.choice(['PROMO10', 'SAVE20', 'NONE'], n)
+    })
     
-    data = []
-    for date in dates:
-        p_type = np.random.choice(post_types)
-        reach = np.random.randint(1000, 5000)
-        impressions = reach * np.random.uniform(1.1, 1.5)
-        likes = reach * np.random.uniform(0.02, 0.08)
-        comments = likes * np.random.uniform(0.05, 0.1)
-        saves = reach * np.random.uniform(0.01, 0.03)
-        shares = reach * np.random.uniform(0.005, 0.02)
-        visits = reach * np.random.uniform(0.02, 0.05)
-        clicks = visits * np.random.uniform(0.1, 0.3)
-        
-        data.append([date, p_type, impressions, reach, likes, comments, saves, shares, visits, clicks])
+    # Logic: Conversions are a subset of leads, Revenue is a multiple of conversions
+    data['conversions'] = (data['leads'] * np.random.uniform(0.1, 0.4, n)).astype(int)
+    data['revenue'] = data['conversions'] * np.random.uniform(20, 150, n)
+    return data
 
-    df = pd.DataFrame(data, columns=[
-        'Date', 'Post_Type', 'Impressions', 'Reach', 'Likes', 
-        'Comments', 'Saves', 'Shares', 'Profile_Visits', 'Website_Clicks'
-    ])
+# File Upload Logic
+uploaded_file = st.file_uploader("Upload Marketing Dataset (CSV)", type=["csv"])
+if uploaded_file:
+    df = pd.read_csv(uploaded_file)
+else:
+    df = generate_dataset()
+    st.info("Using Auto-Generated Sample Dataset")
+
+# =========================
+# 2. DATA CLEANING & FEATURE ENGINEERING
+# =========================
+st.header("1️⃣ Data Processing")
+
+# Cleaning
+df.drop_duplicates(inplace=True)
+df.fillna(0, inplace=True)
+
+# Feature Engineering
+df['ROI'] = (df['revenue'] - df['spend']) / df['spend']
+df['CAC'] = df['spend'] / df['conversions'].replace(0, 1)
+df['Conversion_Rate'] = df['conversions'] / df['clicks']
+df['Promo_Used'] = df['promo_code'].apply(lambda x: 0 if x == "NONE" else 1)
+
+# Regex for Promo Validation
+df['Valid_Promo'] = df['promo_code'].apply(
+    lambda x: 1 if re.match(r'^[A-Z]+\d+$', str(x)) else 0
+)
+
+# Manual Normalization (Standard Score: (x - mean) / std)
+num_cols = ['spend', 'clicks', 'leads', 'conversions', 'revenue']
+df_scaled = df.copy()
+for col in num_cols:
+    df_scaled[col] = (df[col] - df[col].mean()) / df[col].std()
+
+st.dataframe(df.head())
+
+# =========================
+# 3. VISUAL ANALYSIS (Matplotlib)
+# =========================
+st.header("2️⃣ Performance Visuals")
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("ROI by Channel")
+    roi_data = df.groupby('channel')['ROI'].mean().sort_values()
+    fig, ax = plt.subplots()
+    ax.barh(roi_data.index, roi_data.values, color='#4CAF50')
+    ax.set_xlabel('Average ROI')
+    st.pyplot(fig)
+
+with col2:
+    st.subheader("Acquisition Cost (CAC)")
+    cac_data = df.groupby('channel')['CAC'].mean().sort_values(ascending=False)
+    fig2, ax2 = plt.subplots()
+    ax2.bar(cac_data.index, cac_data.values, color='#FF5722')
+    ax2.set_ylabel('Avg Cost Per Conversion')
+    st.pyplot(fig2)
+
+# =========================
+# 4. STATISTICAL INFERENCE (Scipy)
+# =========================
+st.header("3️⃣ Hypothesis Testing")
+promo_conv = df[df['Promo_Used'] == 1]['Conversion_Rate']
+none_conv = df[df['Promo_Used'] == 0]['Conversion_Rate']
+
+t_stat, p_val = stats.ttest_ind(promo_conv, none_conv)
+
+st.write(f"**T-Statistic:** {t_stat:.4f} | **P-Value:** {p_val:.4f}")
+if p_val < 0.05:
+    st.success("Result: Promo codes significantly impact conversion rates.")
+else:
+    st.warning("Result: No statistically significant impact from promo codes.")
+
+# =========================
+# 5. PREDICTIVE MODELING (Numpy OLS)
+# =========================
+st.header("4️⃣ Revenue Prediction Model")
+st.write("Calculated using the Normal Equation: $\\hat{\\beta} = (X^T X)^{-1} X^T y$")
+
+# Prepare Data
+X = df[['spend', 'clicks', 'leads', 'Promo_Used']].values
+X = np.hstack([np.ones((X.shape[0], 1)), X]) # Add Intercept
+y = df['revenue'].values
+
+# Matrix Calculations
+try:
+    # beta = (X.T * X)^-1 * X.T * y
+    xtx_inv = np.linalg.inv(X.T @ X)
+    beta = xtx_inv @ X.T @ y
     
-    # Calculate Business KPIs
-    df['Engagement_Score'] = (df['Likes'] * 1) + (df['Comments'] * 2) + (df['Saves'] * 3) + (df['Shares'] * 4)
-    df['ER_Reach'] = (df['Likes'] + df['Comments'] + df['Saves'] + df['Shares']) / df['Reach'] * 100
-    return df
+    # Metrics
+    preds = X @ beta
+    residuals = y - preds
+    r2 = 1 - (np.sum(residuals**2) / np.sum((y - np.mean(y))**2))
+    
+    # Display Results
+    cols = st.columns(5)
+    labels = ['Intercept', 'Spend', 'Clicks', 'Leads', 'Promo']
+    for i, col in enumerate(cols):
+        col.metric(labels[i], f"{beta[i]:.2f}")
+    
+    st.write(f"**Model R-Squared Score:** `{r2:.4f}`")
+except np.linalg.LinAlgError:
+    st.error("Error: Matrix is singular. Check for multicollinearity in your data.")
 
-df = load_data()
-
-# --- 3. SIDEBAR FILTERS ---
-st.sidebar.header("Filter Analytics")
-selected_type = st.sidebar.multiselect("Select Post Type", options=df['Post_Type'].unique(), default=df['Post_Type'].unique())
-date_range = st.sidebar.date_input("Date Range", [df['Date'].min(), df['Date'].max()])
-
-# Apply Filters
-mask = (df['Post_Type'].isin(selected_type)) & (df['Date'].dt.date >= date_range[0]) & (df['Date'].dt.date <= date_range[1])
-filtered_df = df.loc[mask]
-
-# --- 4. TOP LEVEL KPI METRICS ---
-col1, col2, col3, col4 = st.columns(4)
-total_reach = filtered_df['Reach'].sum()
-avg_er = filtered_df['ER_Reach'].mean()
-total_clicks = filtered_df['Website_Clicks'].sum()
-conversion_rate = (total_clicks / filtered_df['Profile_Visits'].sum()) * 100
-
-col1.metric("Total Reach", f"{total_reach/1000:.1f}K")
-col2.metric("Avg. Engagement Rate", f"{avg_er:.2f}%")
-col3.metric("Website Clicks", int(total_clicks))
-col4.metric("Profile Conv. Rate", f"{conversion_rate:.1f}%")
-
-st.markdown("---")
-
-# --- 5. VISUALIZATIONS ---
-row1_col1, row1_col2 = st.columns(2)
-
-with row1_col1:
-    st.subheader("Reach vs. Impressions Over Time")
-    fig_line = px.line(filtered_df, x='Date', y=['Reach', 'Impressions'], 
-                       color_discrete_sequence=['#E1306C', '#FFDC80'], template="plotly_white")
-    st.plotly_chart(fig_line, use_container_width=True)
-
-with row1_col2:
-    st.subheader("Engagement Quality by Post Type")
-    # Grouping for bar chart
-    avg_by_type = filtered_df.groupby('Post_Type')['ER_Reach'].mean().reset_index()
-    fig_bar = px.bar(avg_by_type, x='Post_Type', y='ER_Reach', color='Post_Type',
-                     labels={'ER_Reach': 'Avg Engagement Rate (%)'},
-                     color_discrete_sequence=px.colors.qualitative.Pastel)
-    st.plotly_chart(fig_bar, use_container_width=True)
-
-row2_col1, row2_col2 = st.columns(2)
-
-with row2_col1:
-    st.subheader("Virality Correlation (Saves vs. Shares)")
-    fig_scatter = px.scatter(filtered_df, x='Saves', y='Shares', size='Reach', color='Post_Type',
-                             hover_name='Post_Type', log_x=True, template="ggplot2")
-    st.plotly_chart(fig_scatter, use_container_width=True)
-
-with row2_col2:
-    st.subheader("Top Performing Content (Weighted)")
-    top_posts = filtered_df.sort_values(by='Engagement_Score', ascending=False).head(5)
-    st.dataframe(top_posts[['Date', 'Post_Type', 'Reach', 'Engagement_Score']], use_container_width=True)
-
-# --- 6. STRATEGIC INSIGHTS ---
-st.info(f"""
-**Business Insight:** - The highest conversion rate is currently coming from **{avg_by_type.loc[avg_by_type['ER_Reach'].idxmax(), 'Post_Type']}** content. 
-- A high correlation between Saves and Shares suggests your content is providing **Educational Value**.
-""")
+st.balloons()
